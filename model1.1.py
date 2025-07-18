@@ -1,4 +1,4 @@
-from typing import Annotated, Sequence, TypedDict, List, Union
+from typing import Sequence, TypedDict, List, Union, Annotated
 from dotenv import load_dotenv  
 from langchain_core.messages import BaseMessage
 from langchain_core.messages import ToolMessage
@@ -14,13 +14,23 @@ import asyncio
 from kuksa_client.grpc.aio import VSSClient
 from kuksa_client.grpc import Datapoint
 
+import json
+
 load_dotenv()
+
+try:
+    with open('define.json') as F:
+        configure = json.load(F)
+except Exception as e:
+    print("Error: " , e)
 
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
 
+vss = VSSClient(configure["ip_address"], configure["port"])
+
 async def main():
-    async with VSSClient('127.0.0.1', 55555) as client:
+    async with vss as client:
         current_values = await client.get_current_values([
             'Vehicle.Speed',
         ])
@@ -33,7 +43,7 @@ async def main():
 
 async def set_speed(new_speed: float):
     try:
-        async with VSSClient('127.0.0.1', 55555) as client:
+        async with vss as client:
             # Assuming your client has a method to set values 
             success = await client.set_current_values({
             "Vehicle.Speed": Datapoint(new_speed)
@@ -44,8 +54,8 @@ async def set_speed(new_speed: float):
         return False
     
 async def seat_state():
-    async with VSSClient('127.0.0.1', 55555) as client:
-        current_values = await client.get_current_values([
+    async with vss as client:
+        current_values = await client.get_target_values([
             'Vehicle.Cabin.Seat.Row1.DriverSide.Position',
         ])
         if current_values['Vehicle.Cabin.Seat.Row1.DriverSide.Position'] is not None:
@@ -57,9 +67,9 @@ async def seat_state():
 
 async def set_seat(new_level: float):
     try:
-        async with VSSClient('127.0.0.1', 55555) as client:
+        async with vss as client:
             # Assuming your client has a method to set values 
-            success = await client.set_current_values({
+            success = await client.set_target_values({
             "Vehicle.Cabin.Seat.Row1.DriverSide.Position": Datapoint(new_level)
         })
             return success
@@ -68,7 +78,7 @@ async def set_seat(new_level: float):
         return False
 
 async def lights_state(type):
-    async with VSSClient('127.0.0.1', 55555) as client:
+    async with vss as client:
         low_beam = await client.get_target_values([
             f"{type}"
         ])
@@ -80,7 +90,7 @@ async def lights_state(type):
 
 async def set_lights(new_state: bool, type: str):
     try:
-        async with VSSClient('127.0.0.1', 55555) as client:
+        async with vss as client:
             success = await client.set_target_values({
                 f"{type}": Datapoint(new_state)
             })
@@ -90,7 +100,7 @@ async def set_lights(new_state: bool, type: str):
     
 async def set_fan(new_state: bool, type: str):
     try:
-        async with VSSClient('127.0.0.1', 55555) as client:
+        async with vss as client:
             success = await client.set_target_values({
                 f"{type}": Datapoint(new_state)
             })
@@ -99,7 +109,7 @@ async def set_fan(new_state: bool, type: str):
         return False
     
 async def fan_state(type):
-    async with VSSClient('127.0.0.1', 55555) as client:
+    async with vss as client:
         low_beam = await client.get_target_values([
             f"{type}"
         ])
@@ -217,22 +227,23 @@ def date_teller(date : str):
 
 tools = [time_teller, date_teller, speed_teller, speed_setter, light_teller, light_setter,fan_teller, fan_setter, seat_teller, seat_setter]
 
-model = ChatOllama(model = "llama3.2").bind_tools(tools)
-llm = ChatOllama(model = "llama3.2")
+try:
+    model = ChatOllama(model = configure['tool_model']).bind_tools(tools)
+    llm = ChatOllama(model = configure['com_model'])
+    print("AI model is ready")
+except:
+    print("There is something wrong with AI model")
 
 def model_call(state: AgentState) -> AgentState:
     system_prompt = SystemMessage(content="""
-        You are an AI assistant embedded in a car. Please answer or do thing as straight forward as possiple.
-        If the user asks about general or non-vehicle-related information, respond normally. 
-        Only use tools when specifically required.
-
         There are couple of information you can check and change in this car such as speed , lights , fan speed and set posstion.
-        The first one is speed : detect if user asking for somelike "tell me the speed" or "how fast we are going", that mean user want to know the speed right now. Therefore, call tool 'speed_teller'. 
+        The first one is speed : detect if user asking for somelike 'tell me the speed' or 'how fast we are going', that mean user want to know the speed right now. Therefore, call tool 'speed_teller'. 
             If the user saying something like 'set up speed to ' or 'change speed to ', that means they want to change the car speed, call 'speed_setter' tool to change speed.
         The second one is lights, there are 3 kind of lights low beam lights, high beam lights and hazard lights. 
             (Note: user can prefer to those with different name such as 'low beam' or 'low lights' for low beam lights, 
                                                                         'high beam' or 'high lights' for high beam lights
-                                                                        'head lights' or 'hazard' for hazard lights, or if user say all lights that mean user prefer to everykindd of lights you have)
+                                                                        'head lights' or 'hazard' for hazard lights,
+                                                                        if user say 'all lights' that mean user prefer to every kind of lights you have)
             If the user saying something like ' state of lights' or 'tell me if lights is on', that mean the user want to know the state of lights, call the 'light_teller' to detect what kind of lights, and the state of that lights the user is perfering to.
             However, If the user is asking for something like 'turn lights on ', 'turn lights off', 'set lights on ' or 'set lights off', that mean user want to change the state of lights, if so call 'light_setter' tool, then detect what kind of lights, user want to change state and the state of lights user want to set up to
         The third thing is fan speed, there are 2 kind of fan speed you have access to the first is driver fan speed and the other one is passenger fan speed.
@@ -258,8 +269,9 @@ def model_call(state: AgentState) -> AgentState:
     is_tool_needed = any(keyword in last_user_input for keyword in allowed_keywords)
 
     if is_tool_needed:
-        # Let model call tools
-        response = model.invoke([system_prompt] + state["messages"])
+        
+        response = model.invoke([configure["name"]] + [configure["definition"]] + [system_prompt] + state["messages"])
+        print("Thinking...")
 
         if hasattr(response, "tool_calls") and response.tool_calls:
             print("\nAI is making a tool call:")
@@ -272,9 +284,9 @@ def model_call(state: AgentState) -> AgentState:
         return state
     else:
         # Don't allow tool usage — use plain LLM without tools
-        response = llm.stream([system_prompt] + state["messages"])
+        response = llm.stream([configure["name"]] + [configure["definition"]] + [system_prompt] + state["messages"])
         full_response = ""
-        print("Waiting... ")
+        print("Thinking... ")
         frist_res = False
 
         if response:
@@ -289,8 +301,6 @@ def model_call(state: AgentState) -> AgentState:
 
         state["messages"].append(AIMessage(content= full_response))
         return state
-
-
 
 
 def should_continue(state: AgentState): 
