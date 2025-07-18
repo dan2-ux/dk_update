@@ -30,4 +30,4 @@ COPY . .
 EXPOSE 8000
 
 # Run the application
-CMD ["python", "model1.1.py"]
+CMD ["python", "model1.1.py", "define.json"]
